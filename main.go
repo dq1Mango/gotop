@@ -10,20 +10,31 @@ import (
 	"github.com/gdamore/tcell"
 )
 
-func logger(message string) {
+type logger struct {
+	f *os.File
+}
+
+func newLogger() *logger {
 	file, err := os.OpenFile("log.md", os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		fmt.Println("Error opening file:", err)
-		return
+		panic("opening log")
 	}
-	defer file.Close()
 
+	return &logger{file}
+}
+
+func (l *logger) info(message string) {
 	// Write the new line to the file
-	_, err = file.WriteString("\n" + message)
+	_, err := l.f.WriteString("\n" + message)
 	if err != nil {
 		fmt.Println("Error writing to file:", err)
 		return
 	}
+}
+
+func (l *logger) close() {
+	l.f.Close()
 }
 
 // idk where to put this
@@ -97,7 +108,7 @@ func listenForInput(s tcell.Screen) {
 	}
 }
 
-func updateData(s tcell.Screen) {
+func updateData(s tcell.Screen, l *logger) {
 	defStyle := tcell.StyleDefault.Background(tcell.Color16).Foreground(tcell.Color100)
 	highLightStyle := tcell.StyleDefault.Background(tcell.Color160).Foreground(tcell.Color100)
 
@@ -134,7 +145,10 @@ var cursorRow = 0
 
 func main() {
 	//first log message
-	logger("---New Log---")
+	logger := newLogger()
+	defer logger.close()
+
+	logger.info("hi")
 
 	s, err := tcell.NewScreen()
 	if err != nil {
@@ -151,7 +165,7 @@ func main() {
 	// Clear screen
 	s.Clear()
 
-	go updateData(s)
+	go updateData(s, logger)
 	go listenForInput(s)
 
 	time.Sleep(time.Minute)
