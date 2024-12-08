@@ -56,10 +56,6 @@ func getProcessById(id string) proc {
 
 	children := strings.Split(strings.Trim(string(badChildren), " "), " ")
 
-	for _, child := range children {
-		fmt.Println(child)
-	}
-
 	return proc{string(name), children}
 
 }
@@ -85,7 +81,57 @@ func drawText(s tcell.Screen, x1, y1 int, style tcell.Style, text string) {
 	}
 }
 
-func listenForInput(s tcell.Screen) {
+func refreshScreen(s tcell.Screen, processes map[string]proc, cursor int) {
+
+	defStyle := tcell.StyleDefault.Background(tcell.Color16).Foreground(tcell.Color100)
+	highLightStyle := tcell.StyleDefault.Background(tcell.Color160).Foreground(tcell.Color100)
+
+	s.Clear()
+
+	i := 0
+	for key, value := range processes {
+
+		/*if i == cursorRow {
+			style = highLightStyle
+		} else {
+			style = defStyle
+		}*/
+
+		message := key + ": " + value.name
+		drawText(s, 0, i+2, defStyle, message)
+
+		if i == cursor {
+			drawText(s, 0, i+2, highLightStyle, message)
+		}
+
+		i++
+	}
+	s.Show()
+
+}
+
+func syncChannels(s tcell.Screen, data chan map[string]proc, cursor chan int, l *logger) {
+	cursorRow := 0
+	var processes map[string]proc
+
+	for {
+		select {
+		case processes = <-data:
+			refreshScreen(s, processes, cursorRow)
+		case cursorChange := <-cursor:
+			maybeCursor := cursorRow + cursorChange
+			if maybeCursor < 0 || maybeCursor > len(processes) {
+				continue
+			}
+
+			cursorRow = maybeCursor
+			refreshScreen(s, processes, cursorRow)
+
+		}
+	}
+}
+
+func listenForInput(s tcell.Screen, input chan int, l *logger) {
 
 	quit := func() {
 		s.Fini()
@@ -100,55 +146,46 @@ func listenForInput(s tcell.Screen) {
 		switch ev := ev.(type) {
 		case *tcell.EventResize:
 			s.Sync()
+
 		case *tcell.EventKey:
-			if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyCtrlC {
+
+			switch ev.Key() {
+			case tcell.KeyRune:
+
+				l.info("we got the rune: " + string(ev.Rune()))
+
+				switch string(ev.Rune()) {
+				case "j":
+					input <- 1
+
+				case "k":
+					input <- -1
+				}
+
+			case tcell.KeyEscape, tcell.KeyCtrlC:
 				quit()
 			}
 		}
 	}
 }
 
-func updateData(s tcell.Screen, l *logger) {
-	defStyle := tcell.StyleDefault.Background(tcell.Color16).Foreground(tcell.Color100)
-	highLightStyle := tcell.StyleDefault.Background(tcell.Color160).Foreground(tcell.Color100)
+func updateData(data chan map[string]proc, l *logger) {
 
 	for {
 
-		rootIDs := getRootIds()
-
-		s.Clear()
-
-		var style tcell.Style
-		i := 0
-		for key, value := range rootIDs {
-
-			if i == cursorRow {
-				style = highLightStyle
-			} else {
-				style = defStyle
-			}
-
-			message := key + ": " + value.name
-			drawText(s, 0, i+2, style, message)
-
-			i++
-		}
-
-		s.Show()
+		data <- getRootIds()
 
 		time.Sleep(time.Second * 2)
 
 	}
 }
 
-var cursorRow = 0
-
 func main() {
 	//first log message
 	logger := newLogger()
 	defer logger.close()
 
-	logger.info("hi")
+	logger.info("---New Log---")
 
 	s, err := tcell.NewScreen()
 	if err != nil {
@@ -165,8 +202,24 @@ func main() {
 	// Clear screen
 	s.Clear()
 
-	go updateData(s, logger)
-	go listenForInput(s)
+	quit := func() {
+		// You have to catch panics in a defer, clean up, and
+		// re-raise them - otherwise your application can
+		// die without leaving any diagnostic trace.
+		maybePanic := recover()
+		s.Fini()
+		if maybePanic != nil {
+			panic(maybePanic)
+		}
+	}
+	defer quit()
+
+	data := make(chan map[string]proc)
+	input := make(chan int)
+
+	go updateData(data, logger)
+	go listenForInput(s, input, logger)
+	go syncChannels(s, data, input, logger)
 
 	time.Sleep(time.Minute)
 
