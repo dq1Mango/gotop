@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,33 +42,148 @@ func (l *logger) close() {
 // idk where to put this
 type proc struct {
 	name     string
+	user     string
+	cpu      string
+	mem      string
 	children []string
 }
 
-func getProcessById(id string) proc {
-	name, err := os.ReadFile("/proc/" + id + "/comm")
-	if err != nil {
-		fmt.Println("Error reading file: ", err)
-	}
-
-	badChildren, err := os.ReadFile("/proc/" + id + "/task/" + id + "/children")
-	if err != nil {
-		fmt.Println("Error reading file: ", err)
-	}
-
-	children := strings.Split(strings.Trim(string(badChildren), " "), " ")
-
-	return proc{string(name), children}
-
+type params struct {
+	name     bool
+	user     bool
+	cpu      bool
+	mem      bool
+	children bool
 }
 
-func getRootIds() map[string]proc {
-	children := getProcessById("1").children
+type userIDs struct {
+	mapping map[string]string
+}
+
+func userSplitter(chr rune) bool {
+	return chr == '\n' || chr == ')'
+}
+
+func getUserFromID(id string) string {
+	cmd := exec.Command("id", id)
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Println(err)
+		panic("running \"id\"")
+	}
+	name := strings.FieldsFunc(string(output), userSplitter)
+	return name[1]
+}
+
+func genUserIDs() *userIDs {
+	mapping := make(map[string]string)
+
+	mapping["1"] = getUserFromID("1")
+	mapping["1000"] = getUserFromID("1000")
+
+	return &userIDs{mapping}
+}
+
+func (user *userIDs) addUser(id, name *string) {
+	//should add a check here but i dont write bugs so im sure its fine
+	user.mapping[*id] = *name
+}
+
+type memInfo struct {
+	totalMem     int
+	availableMem int
+}
+
+func genMemInfo() *memInfo {
+
+	file, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		fmt.Println("could not read meminfo and i really should be using the logger function")
+	}
+
+	badData := string(file)
+	badData = strings.Replace(badData, " ", "", 0)
+	badData = strings.Replace(badData, "kB", "", 0)
+	info := strings.Fields(badData)
+
+	total, err := strconv.Atoi(info[1])
+	if err != nil {
+		//one of these days ill get the logger and catch these errors properly
+		fmt.Println("Error:", err)
+	}
+
+	available, err := strconv.Atoi(info[3])
+	if err != nil {
+		//one of these days ill get the logger and catch these errors properly
+		fmt.Println("Error:", err)
+	}
+
+	return &memInfo{total, available}
+}
+
+func getProcessData(id string, flags *params, users *userIDs, mem *memInfo) proc {
+	var data proc
+
+	if flags.name {
+		name, err := os.ReadFile("/proc/" + id + "/comm")
+		if err != nil {
+			fmt.Println("Error reading file: ", err)
+		}
+
+		data.name = string(name)
+	}
+
+	if flags.user {
+		badUser, err := os.ReadFile("/proc/" + id + "/comm")
+		if err != nil {
+			fmt.Println("error reading name file")
+		}
+		user := string(badUser)
+		name, ok := users.mapping[user]
+		if ok {
+			data.user = name
+		} else {
+			name = getUserFromID(id)
+			data.user = name
+			users.addUser(&user, &name)
+		}
+	}
+
+	if flags.mem {
+		file, err := os.ReadFile("/proc/" + id + "/statm")
+		if err != nil {
+			log.Fatalf("could not read file with da meminfo")
+			panic("error reading file") //pretty sure this is what im supposed to do but ig we will find out :)
+		}
+
+		badMemory := string(file)
+		memory := strings.Split(badMemory, " ")
+		usage, _ := strconv.Atoi(memory[1]) //yeah ik ill fix it later
+
+		data.mem = string(usage / mem.totalMem)
+	}
+
+	if flags.children {
+		badChildren, err := os.ReadFile("/proc/" + id + "/task/" + id + "/children")
+		if err != nil {
+			fmt.Println("Error reading file: ", err)
+		}
+
+		children := strings.Split(strings.Trim(string(badChildren), " "), " ")
+
+		data.children = children
+	}
+
+	return data
+}
+
+func getRootIds(flags *params, users *userIDs, mem *memInfo) map[string]proc {
+	children := getProcessData("1", flags, users, mem).children
 
 	var processes = make(map[string]proc)
 
 	for _, child := range children {
-		processes[child] = getProcessById(child)
+		processes[child] = getProcessData(child, flags, users, mem)
 	}
 
 	return processes
@@ -120,7 +237,7 @@ func syncChannels(s tcell.Screen, data chan map[string]proc, cursor chan int, l 
 			refreshScreen(s, processes, cursorRow)
 		case cursorChange := <-cursor:
 			maybeCursor := cursorRow + cursorChange
-			if maybeCursor < 0 || maybeCursor > len(processes) {
+			if maybeCursor < 0 || maybeCursor >= len(processes) {
 				continue
 			}
 
@@ -169,11 +286,11 @@ func listenForInput(s tcell.Screen, input chan int, l *logger) {
 	}
 }
 
-func updateData(data chan map[string]proc, l *logger) {
+func updateData(data chan map[string]proc, flags *params, users *userIDs, mem *memInfo, l *logger) {
 
 	for {
 
-		data <- getRootIds()
+		data <- getRootIds(flags, users, mem)
 
 		time.Sleep(time.Second * 2)
 
@@ -214,10 +331,14 @@ func main() {
 	}
 	defer quit()
 
+	flags := params{true, true, false, true, true}
+	users := genUserIDs()
+	mem := genMemInfo()
+
 	data := make(chan map[string]proc)
 	input := make(chan int)
 
-	go updateData(data, logger)
+	go updateData(data, &flags, users, mem, logger)
 	go listenForInput(s, input, logger)
 	go syncChannels(s, data, input, logger)
 
