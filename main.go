@@ -60,26 +60,32 @@ type userIDs struct {
 	mapping map[string]string
 }
 
-func userSplitter(chr rune) bool {
-	return chr == '\n' || chr == ')'
-}
+/*func userSplitter(chr rune) bool {
+	return chr == '(' || chr == ')'
+}*/
 
 func getUserFromID(id string) string {
-	cmd := exec.Command("id", id)
+	file, err := os.ReadFile("/proc/" + id + "/status")
+	if err != nil {
+		panic("reading status file " + id)
+	}
+
+	data := strings.Fields(string(file))
+
+	cmd := exec.Command("id", "-nu", data[19])
 	output, err := cmd.Output()
 	if err != nil {
-		fmt.Println(err)
-		panic("running \"id\"")
+		panic("running \"id\" err: " + id)
 	}
-	name := strings.FieldsFunc(string(output), userSplitter)
-	return name[1]
+	//name := strings.FieldsFunc(string(output), userSplitter)
+	return string(output)
 }
 
 func genUserIDs() *userIDs {
+
 	mapping := make(map[string]string)
 
 	mapping["1"] = getUserFromID("1")
-	mapping["1000"] = getUserFromID("1000")
 
 	return &userIDs{mapping}
 }
@@ -94,34 +100,38 @@ type memInfo struct {
 	availableMem int
 }
 
-func genMemInfo() *memInfo {
+func genMemInfo(l *logger) *memInfo {
 
 	file, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
-		fmt.Println("could not read meminfo and i really should be using the logger function")
+		l.info("not gambling here")
+		panic("ahah")
 	}
 
 	badData := string(file)
-	badData = strings.Replace(badData, " ", "", 0)
-	badData = strings.Replace(badData, "kB", "", 0)
 	info := strings.Fields(badData)
 
 	total, err := strconv.Atoi(info[1])
 	if err != nil {
 		//one of these days ill get the logger and catch these errors properly
 		fmt.Println("Error:", err)
+		panic("dont know tbh")
 	}
 
-	available, err := strconv.Atoi(info[3])
+	available, err := strconv.Atoi(info[4])
 	if err != nil {
 		//one of these days ill get the logger and catch these errors properly
 		fmt.Println("Error:", err)
+		panic("the same as the one before me")
 	}
+
+	l.info("total: " + strconv.Itoa(total))
 
 	return &memInfo{total, available}
 }
 
-func getProcessData(id string, flags *params, users *userIDs, mem *memInfo) proc {
+func getProcessData(id string, flags *params, users *userIDs, mem *memInfo, l *logger) proc {
+
 	var data proc
 
 	if flags.name {
@@ -160,7 +170,8 @@ func getProcessData(id string, flags *params, users *userIDs, mem *memInfo) proc
 		memory := strings.Split(badMemory, " ")
 		usage, _ := strconv.Atoi(memory[1]) //yeah ik ill fix it later
 
-		data.mem = string(usage / mem.totalMem)
+		data.mem = strconv.FormatFloat(float64(usage)/float64(mem.totalMem)*100, 'f', -1, 64)
+		l.info(data.mem)
 	}
 
 	if flags.children {
@@ -174,16 +185,17 @@ func getProcessData(id string, flags *params, users *userIDs, mem *memInfo) proc
 		data.children = children
 	}
 
+	//l.info(data.mem)
 	return data
 }
 
-func getRootIds(flags *params, users *userIDs, mem *memInfo) map[string]proc {
-	children := getProcessData("1", flags, users, mem).children
+func getRootIds(flags *params, users *userIDs, mem *memInfo, l *logger) map[string]proc {
+	children := getProcessData("1", flags, users, mem, l).children
 
 	var processes = make(map[string]proc)
 
 	for _, child := range children {
-		processes[child] = getProcessData(child, flags, users, mem)
+		processes[child] = getProcessData(child, flags, users, mem, l)
 	}
 
 	return processes
@@ -208,13 +220,7 @@ func refreshScreen(s tcell.Screen, processes map[string]proc, cursor int) {
 	i := 0
 	for key, value := range processes {
 
-		/*if i == cursorRow {
-			style = highLightStyle
-		} else {
-			style = defStyle
-		}*/
-
-		message := key + ": " + value.name
+		message := key + ": " + value.user + ", " + value.mem + ", " + value.name
 		drawText(s, 0, i+2, defStyle, message)
 
 		if i == cursor {
@@ -286,11 +292,20 @@ func listenForInput(s tcell.Screen, input chan int, l *logger) {
 	}
 }
 
-func updateData(data chan map[string]proc, flags *params, users *userIDs, mem *memInfo, l *logger) {
+func updateData(s tcell.Screen, data chan map[string]proc, flags *params, users *userIDs, mem *memInfo, l *logger) {
+
+	defer func() {
+		maybePanic := recover()
+		s.Fini()
+		fmt.Println("i quitted")
+		if maybePanic != nil {
+			panic(maybePanic)
+		}
+	}()
 
 	for {
 
-		data <- getRootIds(flags, users, mem)
+		data <- getRootIds(flags, users, mem, l)
 
 		time.Sleep(time.Second * 2)
 
@@ -323,6 +338,8 @@ func main() {
 		// You have to catch panics in a defer, clean up, and
 		// re-raise them - otherwise your application can
 		// die without leaving any diagnostic trace.
+		fmt.Println("i quit")
+		logger.info("i quit")
 		maybePanic := recover()
 		s.Fini()
 		if maybePanic != nil {
@@ -333,12 +350,12 @@ func main() {
 
 	flags := params{true, true, false, true, true}
 	users := genUserIDs()
-	mem := genMemInfo()
+	mem := genMemInfo(logger)
 
 	data := make(chan map[string]proc)
 	input := make(chan int)
 
-	go updateData(data, &flags, users, mem, logger)
+	go updateData(s, data, &flags, users, mem, logger)
 	go listenForInput(s, input, logger)
 	go syncChannels(s, data, input, logger)
 
