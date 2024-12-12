@@ -48,14 +48,6 @@ type proc struct {
 	children []string
 }
 
-type params struct {
-	name     bool
-	user     bool
-	cpu      bool
-	mem      bool
-	children bool
-}
-
 type userIDs struct {
 	mapping map[string]string
 }
@@ -130,11 +122,11 @@ func genMemInfo(l *logger) *memInfo {
 	return &memInfo{total, available}
 }
 
-func getProcessData(id string, flags *params, users *userIDs, mem *memInfo, l *logger) proc {
+func getProcessData(id string, flags *map[string]bool, users *userIDs, mem *memInfo, l *logger) proc {
 
 	var data proc
 
-	if flags.name {
+	if (*flags)["name"] {
 		name, err := os.ReadFile("/proc/" + id + "/comm")
 		if err != nil {
 			fmt.Println("Error reading file: ", err)
@@ -143,7 +135,7 @@ func getProcessData(id string, flags *params, users *userIDs, mem *memInfo, l *l
 		data.name = string(name)
 	}
 
-	if flags.user {
+	if (*flags)["user"] {
 		badUser, err := os.ReadFile("/proc/" + id + "/comm")
 		if err != nil {
 			fmt.Println("error reading name file")
@@ -159,7 +151,7 @@ func getProcessData(id string, flags *params, users *userIDs, mem *memInfo, l *l
 		}
 	}
 
-	if flags.mem {
+	if (*flags)["mem"] {
 		file, err := os.ReadFile("/proc/" + id + "/statm")
 		if err != nil {
 			log.Fatalf("could not read file with da meminfo")
@@ -174,7 +166,7 @@ func getProcessData(id string, flags *params, users *userIDs, mem *memInfo, l *l
 		l.info(data.mem)
 	}
 
-	if flags.children {
+	if (*flags)["children"] {
 		badChildren, err := os.ReadFile("/proc/" + id + "/task/" + id + "/children")
 		if err != nil {
 			fmt.Println("Error reading file: ", err)
@@ -189,7 +181,7 @@ func getProcessData(id string, flags *params, users *userIDs, mem *memInfo, l *l
 	return data
 }
 
-func getRootIds(flags *params, users *userIDs, mem *memInfo, l *logger) map[string]proc {
+func getRootIds(flags *map[string]bool, users *userIDs, mem *memInfo, l *logger) map[string]proc {
 	children := getProcessData("1", flags, users, mem, l).children
 
 	var processes = make(map[string]proc)
@@ -210,7 +202,9 @@ func drawText(s tcell.Screen, x1, y1 int, style tcell.Style, text string) {
 	}
 }
 
-func refreshScreen(s tcell.Screen, processes map[string]proc, cursor int) {
+func sortProcesses(processes map[string]proc, sort string) {}
+
+func refreshScreen(s tcell.Screen, processes map[string]proc, cursor int, sort string) {
 
 	defStyle := tcell.StyleDefault.Background(tcell.Color16).Foreground(tcell.Color100)
 	highLightStyle := tcell.StyleDefault.Background(tcell.Color160).Foreground(tcell.Color100)
@@ -233,24 +227,36 @@ func refreshScreen(s tcell.Screen, processes map[string]proc, cursor int) {
 
 }
 
-func syncChannels(s tcell.Screen, data chan map[string]proc, cursor chan int, l *logger) {
+func syncChannels(s tcell.Screen, flags *map[string]bool, data chan map[string]proc, cursor chan int, sort chan int, l *logger) {
 	cursorRow := 0
+	sortCollumn := 0
+
+	sortMap := []string{}
+	for key, value := range *flags {
+		if value {
+			sortMap = append(sortMap, key)
+		}
+	}
+
 	var processes map[string]proc
 
 	for {
 		select {
 		case processes = <-data:
-			refreshScreen(s, processes, cursorRow)
+			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn])
 		case cursorChange := <-cursor:
 			maybeCursor := cursorRow + cursorChange
 			if maybeCursor < 0 || maybeCursor >= len(processes) {
 				continue
 			}
-
 			cursorRow = maybeCursor
-			refreshScreen(s, processes, cursorRow)
+			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn])
 
+		case sortChange := <-sort:
+			sortCollumn = (sortCollumn + sortChange) % len(sortMap)
+			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn])
 		}
+
 	}
 }
 
@@ -292,7 +298,7 @@ func listenForInput(s tcell.Screen, input chan int, l *logger) {
 	}
 }
 
-func updateData(s tcell.Screen, data chan map[string]proc, flags *params, users *userIDs, mem *memInfo, l *logger) {
+func updateData(s tcell.Screen, data chan map[string]proc, flags *map[string]bool, users *userIDs, mem *memInfo, l *logger) {
 
 	defer func() {
 		maybePanic := recover()
@@ -348,16 +354,17 @@ func main() {
 	}
 	defer quit()
 
-	flags := params{true, true, false, true, true}
+	flags := map[string]bool{"id": true, "user": true, "cpu": false, "mem": true, "name": true}
 	users := genUserIDs()
 	mem := genMemInfo(logger)
 
 	data := make(chan map[string]proc)
 	input := make(chan int)
+	sort := make(chan int)
 
 	go updateData(s, data, &flags, users, mem, logger)
 	go listenForInput(s, input, logger)
-	go syncChannels(s, data, input, logger)
+	go syncChannels(s, &flags, data, input, sort, logger)
 
 	time.Sleep(time.Minute)
 
