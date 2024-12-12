@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ func (l *logger) close() {
 
 // idk where to put this
 type proc struct {
+	id       string
 	name     string
 	user     string
 	cpu      string
@@ -126,6 +128,8 @@ func getProcessData(id string, flags *map[string]bool, users *userIDs, mem *memI
 
 	var data proc
 
+	data.id = id
+
 	if (*flags)["name"] {
 		name, err := os.ReadFile("/proc/" + id + "/comm")
 		if err != nil {
@@ -163,7 +167,7 @@ func getProcessData(id string, flags *map[string]bool, users *userIDs, mem *memI
 		usage, _ := strconv.Atoi(memory[1]) //yeah ik ill fix it later
 
 		data.mem = strconv.FormatFloat(float64(usage)/float64(mem.totalMem)*100, 'f', -1, 64)
-		l.info(data.mem)
+		//l.info("memory: " + data.mem)
 	}
 
 	if (*flags)["children"] {
@@ -177,17 +181,18 @@ func getProcessData(id string, flags *map[string]bool, users *userIDs, mem *memI
 		data.children = children
 	}
 
-	//l.info(data.mem)
+	//l.info("made it here: " + id)
 	return data
 }
 
-func getRootIds(flags *map[string]bool, users *userIDs, mem *memInfo, l *logger) map[string]proc {
-	children := getProcessData("1", flags, users, mem, l).children
+func getRootIds(flags *map[string]bool, users *userIDs, mem *memInfo, l *logger) []proc {
+	children := getProcessData("1", &map[string]bool{"children": true}, users, mem, l).children
 
-	var processes = make(map[string]proc)
+	processes := []proc{}
 
+	//l.info("not entirely sure what i changed: " + strconv.Itoa(len(children)))
 	for _, child := range children {
-		processes[child] = getProcessData(child, flags, users, mem, l)
+		processes = append(processes, getProcessData(child, flags, users, mem, l))
 	}
 
 	return processes
@@ -202,19 +207,53 @@ func drawText(s tcell.Screen, x1, y1 int, style tcell.Style, text string) {
 	}
 }
 
-func sortProcesses(processes map[string]proc, sort string) {}
+func compareStrings(a, b string) int {
+	if a > b {
+		return 1
+	} else if a < b {
+		return -1
+	} else {
+		return 0
+	}
+}
 
-func refreshScreen(s tcell.Screen, processes map[string]proc, cursor int, sort string) {
+func sortProcesses(processes *[]proc, sort string) {
+	if sort == "id" {
+		slices.SortStableFunc(*processes, func(a, b proc) int {
+			first, _ := strconv.Atoi(a.id)
+			second, _ := strconv.Atoi(b.id)
+			if first > second {
+				return 1
+			} else if first < second {
+				return -1
+			} else {
+				return 0
+			}
+		})
+	} else if sort == "user" {
+		slices.SortStableFunc(*processes, func(a, b proc) int {
+			return compareStrings(a.user, b.user)
+		})
+	} else if sort == "mem" {
+		slices.SortStableFunc(*processes, func(a, b proc) int {
+			return compareStrings(b.mem, a.mem)
+		})
+	}
+}
+
+func refreshScreen(s tcell.Screen, processes []proc, cursor int, sort string) {
 
 	defStyle := tcell.StyleDefault.Background(tcell.Color16).Foreground(tcell.Color100)
 	highLightStyle := tcell.StyleDefault.Background(tcell.Color160).Foreground(tcell.Color100)
 
 	s.Clear()
 
-	i := 0
-	for key, value := range processes {
+	sortProcesses(&processes, sort)
 
-		message := key + ": " + value.user + ", " + value.mem + ", " + value.name
+	i := 0
+	for _, value := range processes {
+
+		message := value.id + ": " + value.user + ", " + value.mem + ", " + value.name
 		drawText(s, 0, i+2, defStyle, message)
 
 		if i == cursor {
@@ -227,7 +266,7 @@ func refreshScreen(s tcell.Screen, processes map[string]proc, cursor int, sort s
 
 }
 
-func syncChannels(s tcell.Screen, flags *map[string]bool, data chan map[string]proc, cursor chan int, sort chan int, l *logger) {
+func syncChannels(s tcell.Screen, flags *map[string]bool, data chan []proc, cursor chan int, sort chan int, l *logger) {
 	cursorRow := 0
 	sortCollumn := 0
 
@@ -238,29 +277,29 @@ func syncChannels(s tcell.Screen, flags *map[string]bool, data chan map[string]p
 		}
 	}
 
-	var processes map[string]proc
+	//temporary to advoid sorting by process name
+	sortMap = sortMap[:len(sortMap)-1]
+
+	var processes []proc
 
 	for {
 		select {
 		case processes = <-data:
+			l.info("recieved the data: " + strconv.Itoa(len(processes)))
 			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn])
+
 		case cursorChange := <-cursor:
-			maybeCursor := cursorRow + cursorChange
-			if maybeCursor < 0 || maybeCursor >= len(processes) {
-				continue
-			}
-			cursorRow = maybeCursor
+			cursorRow = (cursorRow + cursorChange + len(processes)) % len(processes)
 			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn])
 
 		case sortChange := <-sort:
-			sortCollumn = (sortCollumn + sortChange) % len(sortMap)
+			sortCollumn = (sortCollumn + sortChange + len(sortMap)) % len(sortMap)
 			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn])
 		}
-
 	}
 }
 
-func listenForInput(s tcell.Screen, input chan int, l *logger) {
+func listenForInput(s tcell.Screen, input chan int, sort chan int, l *logger) {
 
 	quit := func() {
 		s.Fini()
@@ -289,6 +328,12 @@ func listenForInput(s tcell.Screen, input chan int, l *logger) {
 
 				case "k":
 					input <- -1
+
+				case "h":
+					sort <- -1
+
+				case "l":
+					sort <- 1
 				}
 
 			case tcell.KeyEscape, tcell.KeyCtrlC:
@@ -298,7 +343,7 @@ func listenForInput(s tcell.Screen, input chan int, l *logger) {
 	}
 }
 
-func updateData(s tcell.Screen, data chan map[string]proc, flags *map[string]bool, users *userIDs, mem *memInfo, l *logger) {
+func updateData(s tcell.Screen, data chan []proc, flags *map[string]bool, users *userIDs, mem *memInfo, l *logger) {
 
 	defer func() {
 		maybePanic := recover()
@@ -312,7 +357,7 @@ func updateData(s tcell.Screen, data chan map[string]proc, flags *map[string]boo
 	for {
 
 		data <- getRootIds(flags, users, mem, l)
-
+		l.info("sent new data")
 		time.Sleep(time.Second * 2)
 
 	}
@@ -358,12 +403,12 @@ func main() {
 	users := genUserIDs()
 	mem := genMemInfo(logger)
 
-	data := make(chan map[string]proc)
+	data := make(chan []proc)
 	input := make(chan int)
 	sort := make(chan int)
 
 	go updateData(s, data, &flags, users, mem, logger)
-	go listenForInput(s, input, logger)
+	go listenForInput(s, input, sort, logger)
 	go syncChannels(s, &flags, data, input, sort, logger)
 
 	time.Sleep(time.Minute)
