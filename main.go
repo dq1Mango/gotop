@@ -238,6 +238,10 @@ func sortProcesses(processes *[]proc, sort string) {
 		slices.SortStableFunc(*processes, func(a, b proc) int {
 			return compareStrings(b.mem, a.mem)
 		})
+	} else if sort == "name" {
+		slices.SortStableFunc(*processes, func(a, b proc) int {
+			return compareStrings(a.name, b.name)
+		})
 	}
 }
 
@@ -278,7 +282,6 @@ func syncChannels(s tcell.Screen, flags *map[string]bool, data chan []proc, curs
 	}
 
 	//temporary to advoid sorting by process name
-	sortMap = sortMap[:len(sortMap)-1]
 
 	var processes []proc
 
@@ -299,7 +302,7 @@ func syncChannels(s tcell.Screen, flags *map[string]bool, data chan []proc, curs
 	}
 }
 
-func listenForInput(s tcell.Screen, input chan int, sort chan int, l *logger) {
+func listenForInput(s tcell.Screen, cursor chan int, sort chan int, l *logger) {
 
 	quit := func() {
 		s.Fini()
@@ -324,10 +327,10 @@ func listenForInput(s tcell.Screen, input chan int, sort chan int, l *logger) {
 
 				switch string(ev.Rune()) {
 				case "j":
-					input <- 1
+					cursor <- 1
 
 				case "k":
-					input <- -1
+					cursor <- -1
 
 				case "h":
 					sort <- -1
@@ -404,12 +407,12 @@ func main() {
 	mem := genMemInfo(logger)
 
 	data := make(chan []proc)
-	input := make(chan int)
+	cursor := make(chan int)
 	sort := make(chan int)
 
 	go updateData(s, data, &flags, users, mem, logger)
-	go listenForInput(s, input, sort, logger)
-	go syncChannels(s, &flags, data, input, sort, logger)
+	go listenForInput(s, cursor, sort, logger)
+	go syncChannels(s, &flags, data, cursor, sort, logger)
 
 	time.Sleep(time.Minute)
 
