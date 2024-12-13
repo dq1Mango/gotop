@@ -47,7 +47,7 @@ type proc struct {
 	user     string
 	cpu      string
 	mem      string
-	children []string
+	children []proc
 }
 
 type userIDs struct {
@@ -61,7 +61,7 @@ type userIDs struct {
 func getUserFromID(id string) string {
 	file, err := os.ReadFile("/proc/" + id + "/status")
 	if err != nil {
-		panic("reading status file " + id)
+		panic("reading status file: " + id)
 	}
 
 	data := strings.Fields(string(file))
@@ -166,36 +166,27 @@ func getProcessData(id string, flags *map[string]bool, users *userIDs, mem *memI
 		memory := strings.Split(badMemory, " ")
 		usage, _ := strconv.Atoi(memory[1]) //yeah ik ill fix it later
 
-		data.mem = strconv.FormatFloat(float64(usage)/float64(mem.totalMem)*100, 'f', -1, 64)
-		//l.info("memory: " + data.mem)
+		data.mem = strconv.FormatFloat(float64(int(float64(usage)/float64(mem.totalMem)*10000))/100, 'f', -1, 64)
 	}
 
-	if (*flags)["children"] {
+	if true {
 		badChildren, err := os.ReadFile("/proc/" + id + "/task/" + id + "/children")
 		if err != nil {
 			fmt.Println("Error reading file: ", err)
 		}
 
-		children := strings.Split(strings.Trim(string(badChildren), " "), " ")
+		childrenIDs := strings.Fields(string(badChildren))
+
+		children := []proc{}
+
+		for _, child := range childrenIDs {
+			children = append(children, getProcessData(child, flags, users, mem, l))
+		}
 
 		data.children = children
 	}
 
-	//l.info("made it here: " + id)
 	return data
-}
-
-func getRootIds(flags *map[string]bool, users *userIDs, mem *memInfo, l *logger) []proc {
-	children := getProcessData("1", &map[string]bool{"children": true}, users, mem, l).children
-
-	processes := []proc{}
-
-	//l.info("not entirely sure what i changed: " + strconv.Itoa(len(children)))
-	for _, child := range children {
-		processes = append(processes, getProcessData(child, flags, users, mem, l))
-	}
-
-	return processes
 }
 
 func drawText(s tcell.Screen, x1, y1 int, style tcell.Style, text string) {
@@ -205,6 +196,15 @@ func drawText(s tcell.Screen, x1, y1 int, style tcell.Style, text string) {
 		s.SetContent(col, row, r, nil, style)
 		col++
 	}
+}
+
+func getLength(processes *[]proc) int {
+	length := len(*processes)
+	for _, value := range *processes {
+		length += getLength(&value.children)
+	}
+
+	return length
 }
 
 func compareStrings(a, b string) int {
@@ -245,32 +245,55 @@ func sortProcesses(processes *[]proc, sort string) {
 	}
 }
 
-func refreshScreen(s tcell.Screen, processes []proc, cursor int, sort string) {
+func recursChildren(s tcell.Screen, processes *[]proc, sort string, cursor, pad int, row *int, defStyle, highlightStyle *tcell.Style, l *logger) {
+
+	var style tcell.Style
+
+	sortProcesses(processes, sort)
+
+	for _, value := range *processes {
+
+		padding := ""
+		for i := 0; i < pad; i++ {
+			padding += " "
+		}
+		l.info("look at me mom im" + padding + "padded")
+		message := value.id + " " + value.user + " " + value.mem + padding + " └─" + value.name
+
+		if *row == cursor {
+			l.info("hello there: " + strconv.Itoa(cursor))
+			style = *highlightStyle
+		} else {
+			style = *defStyle
+		}
+		drawText(s, 0, *row+2, style, message)
+
+		*row += 1
+
+		if len(value.children) != 0 {
+			recursChildren(s, &value.children, sort, cursor, pad+1, row, defStyle, highlightStyle, l)
+		}
+
+	}
+}
+
+func refreshScreen(s tcell.Screen, processes []proc, cursor int, sort string, l *logger) {
 
 	defStyle := tcell.StyleDefault.Background(tcell.Color16).Foreground(tcell.Color100)
 	highLightStyle := tcell.StyleDefault.Background(tcell.Color160).Foreground(tcell.Color100)
 
 	s.Clear()
 
-	sortProcesses(&processes, sort)
+	row := 0
+	l.info("100 percent we give: " + strconv.Itoa(cursor))
+	recursChildren(s, &processes, sort, cursor, 0, &row, &defStyle, &highLightStyle, l)
 
-	i := 0
-	for _, value := range processes {
-
-		message := value.id + ": " + value.user + ", " + value.mem + ", " + value.name
-		drawText(s, 0, i+2, defStyle, message)
-
-		if i == cursor {
-			drawText(s, 0, i+2, highLightStyle, message)
-		}
-
-		i++
-	}
 	s.Show()
 
 }
 
 func syncChannels(s tcell.Screen, flags *map[string]bool, data chan []proc, cursor chan int, sort chan int, l *logger) {
+	length := 1
 	cursorRow := 0
 	sortCollumn := 0
 
@@ -289,15 +312,17 @@ func syncChannels(s tcell.Screen, flags *map[string]bool, data chan []proc, curs
 		select {
 		case processes = <-data:
 			l.info("recieved the data: " + strconv.Itoa(len(processes)))
-			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn])
+			length = getLength(&processes)
+			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn], l)
 
 		case cursorChange := <-cursor:
-			cursorRow = (cursorRow + cursorChange + len(processes)) % len(processes)
-			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn])
+			cursorRow = (cursorRow + cursorChange + length) % length
+			l.info("ok fr this time: " + strconv.Itoa(cursorChange))
+			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn], l)
 
 		case sortChange := <-sort:
 			sortCollumn = (sortCollumn + sortChange + len(sortMap)) % len(sortMap)
-			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn])
+			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn], l)
 		}
 	}
 }
@@ -359,8 +384,7 @@ func updateData(s tcell.Screen, data chan []proc, flags *map[string]bool, users 
 
 	for {
 
-		data <- getRootIds(flags, users, mem, l)
-		l.info("sent new data")
+		data <- []proc{getProcessData("1", flags, users, mem, l)}
 		time.Sleep(time.Second * 2)
 
 	}
