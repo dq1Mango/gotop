@@ -245,20 +245,25 @@ func sortProcesses(processes *[]proc, sort string) {
 	}
 }
 
-func recursChildren(s tcell.Screen, processes *[]proc, sort string, cursor, pad int, row *int, defStyle, highlightStyle *tcell.Style, l *logger) {
+const idWidth = 5
+const userWidth = 10
+const memoryWidth = 10
+
+func recursChildren(s tcell.Screen, processes *[]proc, sort string, cursor, pad int, row *int, bars []bool, defStyle, highlightStyle *tcell.Style, l *logger) {
 
 	var style tcell.Style
 
 	sortProcesses(processes, sort)
 
-	for _, value := range *processes {
+	for index, value := range *processes {
 
-		padding := ""
-		for i := 0; i < pad; i++ {
-			padding += " "
+		//l.info("look at me mom im" + padding + "padded")
+		coolCharacter := "├"
+		if index == len(*processes)-1 {
+			coolCharacter = "└"
 		}
-		l.info("look at me mom im" + padding + "padded")
-		message := value.id + " " + value.user + " " + value.mem + padding + " └─" + value.name
+
+		//message := value.id + " " + value.user + " " + value.mem + padding + " " + coolCharacter + "─" + value.name
 
 		if *row == cursor {
 			l.info("hello there: " + strconv.Itoa(cursor))
@@ -266,12 +271,50 @@ func recursChildren(s tcell.Screen, processes *[]proc, sort string, cursor, pad 
 		} else {
 			style = *defStyle
 		}
-		drawText(s, 0, *row+2, style, message)
 
+		//display the data
+		collum := 0
+
+		if value.id != "" {
+			drawText(s, collum, *row+2, style, value.id)
+			collum += idWidth
+		}
+
+		if value.user != "" {
+			drawText(s, collum, *row+2, style, value.user)
+			collum += userWidth
+		}
+
+		if value.mem != "" {
+			drawText(s, collum, *row+2, style, value.mem)
+			collum += memoryWidth
+		}
+
+		padding := ""
+		for _, bar := range bars {
+			if bar {
+				padding += "│ "
+			} else {
+				padding += "  "
+			}
+		}
+
+		drawText(s, collum, *row+2, style, padding)
+		collum += 2 * pad
+
+		//yeah ik its only for testing
+		if value.id != "1" {
+			drawText(s, collum, *row+2, style, coolCharacter)
+			drawText(s, collum+1, *row+2, style, "+")
+		}
+
+		if value.name != "" {
+			drawText(s, collum+3, *row+2, style, value.name)
+		}
 		*row += 1
 
-		if len(value.children) != 0 {
-			recursChildren(s, &value.children, sort, cursor, pad+1, row, defStyle, highlightStyle, l)
+		if len(value.children) != 0 { // 																	what is this python?
+			recursChildren(s, &value.children, sort, cursor, pad+1, row, append(bars, index != len(*processes)-1), defStyle, highlightStyle, l)
 		}
 
 	}
@@ -286,7 +329,7 @@ func refreshScreen(s tcell.Screen, processes []proc, cursor int, sort string, l 
 
 	row := 0
 	l.info("100 percent we give: " + strconv.Itoa(cursor))
-	recursChildren(s, &processes, sort, cursor, 0, &row, &defStyle, &highLightStyle, l)
+	recursChildren(s, &processes, sort, cursor, 0, &row, []bool{}, &defStyle, &highLightStyle, l)
 
 	s.Show()
 
