@@ -198,10 +198,13 @@ func drawText(s tcell.Screen, x1, y1 int, style tcell.Style, text string) {
 	}
 }
 
-func getLength(processes *[]proc) int {
+func getLength(processes *[]proc, show *map[string]bool) int {
 	length := len(*processes)
 	for _, value := range *processes {
-		length += getLength(&value.children)
+		if !(*show)[value.id] {
+			continue
+		}
+		length += getLength(&value.children, show)
 	}
 
 	return length
@@ -249,7 +252,7 @@ const idWidth = 5
 const userWidth = 10
 const memoryWidth = 10
 
-func recursChildren(s tcell.Screen, processes *[]proc, sort string, cursor, pad int, row *int, bars []bool, defStyle, highlightStyle *tcell.Style, l *logger) {
+func recursChildren(s tcell.Screen, processes *[]proc, sort string, show *map[string]bool, cursor, pad int, row *int, bars []bool, defStyle, highlightStyle *tcell.Style, l *logger) {
 
 	var style tcell.Style
 
@@ -257,16 +260,9 @@ func recursChildren(s tcell.Screen, processes *[]proc, sort string, cursor, pad 
 
 	for index, value := range *processes {
 
-		//l.info("look at me mom im" + padding + "padded")
-		coolCharacter := "├"
-		if index == len(*processes)-1 {
-			coolCharacter = "└"
-		}
-
 		//message := value.id + " " + value.user + " " + value.mem + padding + " " + coolCharacter + "─" + value.name
 
 		if *row == cursor {
-			l.info("hello there: " + strconv.Itoa(cursor))
 			style = *highlightStyle
 		} else {
 			style = *defStyle
@@ -293,19 +289,28 @@ func recursChildren(s tcell.Screen, processes *[]proc, sort string, cursor, pad 
 		padding := ""
 		for _, bar := range bars {
 			if bar {
-				padding += "│ "
+				padding += "│  "
 			} else {
-				padding += "  "
+				padding += "   "
 			}
 		}
 
 		drawText(s, collum, *row+2, style, padding)
-		collum += 2 * pad
+		collum += 3 * pad
 
-		//yeah ik its only for testing
+		//some fun formatting things
+		coolCharacter := "├"
+		if index == len(*processes)-1 {
+			coolCharacter = "└"
+		}
+		expanded := "+"
+		if (*show)[value.id] {
+			expanded = "─"
+		}
+		//yeah ik its only temporary
 		if value.id != "1" {
 			drawText(s, collum, *row+2, style, coolCharacter)
-			drawText(s, collum+1, *row+2, style, "+")
+			drawText(s, collum+1, *row+2, style, expanded)
 		}
 
 		if value.name != "" {
@@ -313,14 +318,14 @@ func recursChildren(s tcell.Screen, processes *[]proc, sort string, cursor, pad 
 		}
 		*row += 1
 
-		if len(value.children) != 0 { // 																	what is this python?
-			recursChildren(s, &value.children, sort, cursor, pad+1, row, append(bars, index != len(*processes)-1), defStyle, highlightStyle, l)
+		if len(value.children) != 0 && (*show)[value.id] { // 																	what is this python?
+			recursChildren(s, &value.children, sort, show, cursor, pad+1, row, append(bars, index != len(*processes)-1), defStyle, highlightStyle, l)
 		}
 
 	}
 }
 
-func refreshScreen(s tcell.Screen, processes []proc, cursor int, sort string, l *logger) {
+func refreshScreen(s tcell.Screen, processes []proc, cursor int, sort string, show *map[string]bool, l *logger) {
 
 	defStyle := tcell.StyleDefault.Background(tcell.Color16).Foreground(tcell.Color100)
 	highLightStyle := tcell.StyleDefault.Background(tcell.Color160).Foreground(tcell.Color100)
@@ -328,14 +333,43 @@ func refreshScreen(s tcell.Screen, processes []proc, cursor int, sort string, l 
 	s.Clear()
 
 	row := 0
-	l.info("100 percent we give: " + strconv.Itoa(cursor))
-	recursChildren(s, &processes, sort, cursor, 0, &row, []bool{}, &defStyle, &highLightStyle, l)
-
+	//l.info("100 percent we give: " + strconv.Itoa(cursor))
+	recursChildren(s, &processes, sort, show, cursor, 0, &row, []bool{}, &defStyle, &highLightStyle, l)
 	s.Show()
 
 }
 
-func syncChannels(s tcell.Screen, flags *map[string]bool, data chan []proc, cursor chan int, sort chan int, l *logger) {
+func getIDFromRow(processes *[]proc, row, i *int, show *map[string]bool, l *logger) string {
+
+	for _, proc := range *processes {
+		if *row == *i {
+			return proc.id
+		}
+
+		*i++
+
+		if (*show)[proc.id] && len(proc.children) != 0 {
+			id := getIDFromRow(&proc.children, row, i, show, l)
+			if id != "" {
+				return id
+			}
+		}
+	}
+
+	return ""
+}
+
+func syncChannels(s tcell.Screen, flags *map[string]bool, show *map[string]bool, data chan []proc, cursor, sort, toggle chan int, l *logger) {
+
+	defer func() {
+		maybePanic := recover()
+		s.Fini()
+		fmt.Println("i quitted")
+		if maybePanic != nil {
+			panic(maybePanic)
+		}
+	}()
+
 	length := 1
 	cursorRow := 0
 	sortCollumn := 0
@@ -347,30 +381,36 @@ func syncChannels(s tcell.Screen, flags *map[string]bool, data chan []proc, curs
 		}
 	}
 
-	//temporary to advoid sorting by process name
-
 	var processes []proc
 
 	for {
 		select {
 		case processes = <-data:
-			l.info("recieved the data: " + strconv.Itoa(len(processes)))
-			length = getLength(&processes)
-			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn], l)
+			length = getLength(&processes, show)
+			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn], show, l)
 
 		case cursorChange := <-cursor:
 			cursorRow = (cursorRow + cursorChange + length) % length
-			l.info("ok fr this time: " + strconv.Itoa(cursorChange))
-			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn], l)
+			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn], show, l)
 
 		case sortChange := <-sort:
 			sortCollumn = (sortCollumn + sortChange + len(sortMap)) % len(sortMap)
-			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn], l)
+			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn], show, l)
+
+		case toggle := <-toggle:
+			i := 0
+			id := getIDFromRow(&processes, &cursorRow, &i, show, l)
+			if toggle == 1 {
+				(*show)[id] = !(*show)[id]
+			}
+			l.info("bruH: " + strconv.FormatBool((*show)[processes[0].id]))
+			refreshScreen(s, processes, cursorRow, sortMap[sortCollumn], show, l)
 		}
+
 	}
 }
 
-func listenForInput(s tcell.Screen, cursor chan int, sort chan int, l *logger) {
+func listenForInput(s tcell.Screen, cursor, sort, toggle chan int, l *logger) {
 
 	quit := func() {
 		s.Fini()
@@ -405,7 +445,14 @@ func listenForInput(s tcell.Screen, cursor chan int, sort chan int, l *logger) {
 
 				case "l":
 					sort <- 1
+
+				case "q":
+					quit()
 				}
+
+			case tcell.KeyEnter:
+				l.info("detected keypress")
+				toggle <- 1
 
 			case tcell.KeyEscape, tcell.KeyCtrlC:
 				quit()
@@ -470,16 +517,18 @@ func main() {
 	defer quit()
 
 	flags := map[string]bool{"id": true, "user": true, "cpu": false, "mem": true, "name": true}
+	show := map[string]bool{"1": true}
 	users := genUserIDs()
 	mem := genMemInfo(logger)
 
 	data := make(chan []proc)
 	cursor := make(chan int)
 	sort := make(chan int)
+	toggle := make(chan int)
 
 	go updateData(s, data, &flags, users, mem, logger)
-	go listenForInput(s, cursor, sort, logger)
-	go syncChannels(s, &flags, data, cursor, sort, logger)
+	go listenForInput(s, cursor, sort, toggle, logger)
+	go syncChannels(s, &flags, &show, data, cursor, sort, toggle, logger)
 
 	time.Sleep(time.Minute)
 
