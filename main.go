@@ -66,6 +66,7 @@ func getUserFromID(id string) string {
 
 	data := strings.Fields(string(file))
 
+	//im a cheater i know i just rly didnt wanna parse /etc/passwd
 	cmd := exec.Command("id", "-nu", data[19])
 	output, err := cmd.Output()
 	if err != nil {
@@ -136,7 +137,21 @@ func getProcessData(id string, flags *map[string]bool, users *userIDs, mem *memI
 			fmt.Println("Error reading file: ", err)
 		}
 
-		data.name = string(name)
+		if (*flags)["args"] {
+			args, err := os.ReadFile("/proc/" + id + "/cmdline")
+			if err != nil {
+				panic("error reading args file")
+			}
+			arguments := strings.Split(string(args), "--")
+			formatted := ""
+			for _, arg := range arguments {
+				formatted += " --" + arg
+			}
+
+			data.name = string(name) + formatted
+		} else {
+			data.name = string(name)
+		}
 	}
 
 	if (*flags)["user"] {
@@ -189,10 +204,14 @@ func getProcessData(id string, flags *map[string]bool, users *userIDs, mem *memI
 	return data
 }
 
-func drawText(s tcell.Screen, x1, y1 int, style tcell.Style, text string) {
+func drawText(s tcell.Screen, x1, y1, length int, style tcell.Style, text string) {
 	row := y1
 	col := x1
+	stop := x1 + length
 	for _, r := range []rune(text) {
+		if col == stop && length != 0 {
+			break
+		}
 		s.SetContent(col, row, r, nil, style)
 		col++
 	}
@@ -250,7 +269,8 @@ func sortProcesses(processes *[]proc, sort string) {
 
 const idWidth = 5
 const userWidth = 10
-const memoryWidth = 10
+const memoryWidth = 4
+const space = 2
 
 func recursChildren(s tcell.Screen, processes *[]proc, sort string, show *map[string]bool, cursor, pad int, row *int, bars []bool, defStyle, highlightStyle *tcell.Style, l *logger) {
 
@@ -272,19 +292,21 @@ func recursChildren(s tcell.Screen, processes *[]proc, sort string, show *map[st
 		collum := 0
 
 		if value.id != "" {
-			drawText(s, collum, *row+2, style, value.id)
-			collum += idWidth
+			drawText(s, collum, *row+2, idWidth, style, value.id)
+			collum += idWidth + space
 		}
 
 		if value.user != "" {
-			drawText(s, collum, *row+2, style, value.user)
-			collum += userWidth
+			drawText(s, collum, *row+2, userWidth, style, value.user)
+			collum += userWidth + space
 		}
 
 		if value.mem != "" {
-			drawText(s, collum, *row+2, style, value.mem)
-			collum += memoryWidth
+			drawText(s, collum, *row+2, memoryWidth, style, value.mem)
+			collum += memoryWidth + 2
 		}
+
+		collum -= 3 //total hack btw
 
 		padding := ""
 		for _, bar := range bars {
@@ -295,7 +317,7 @@ func recursChildren(s tcell.Screen, processes *[]proc, sort string, show *map[st
 			}
 		}
 
-		drawText(s, collum, *row+2, style, padding)
+		drawText(s, collum, *row+2, 0, style, padding)
 		collum += 3 * pad
 
 		//some fun formatting things
@@ -309,12 +331,12 @@ func recursChildren(s tcell.Screen, processes *[]proc, sort string, show *map[st
 		}
 		//yeah ik its only temporary
 		if value.id != "1" {
-			drawText(s, collum, *row+2, style, coolCharacter)
-			drawText(s, collum+1, *row+2, style, expanded)
+			drawText(s, collum, *row+2, 1, style, coolCharacter)
+			drawText(s, collum+1, *row+2, 1, style, expanded)
 		}
 
 		if value.name != "" {
-			drawText(s, collum+3, *row+2, style, value.name)
+			drawText(s, collum+3, *row+2, 0, style, value.name)
 		}
 		*row += 1
 
@@ -516,7 +538,7 @@ func main() {
 	}
 	defer quit()
 
-	flags := map[string]bool{"id": true, "user": true, "cpu": false, "mem": true, "name": true}
+	flags := map[string]bool{"id": true, "user": true, "cpu": false, "mem": true, "name": true, "args": true}
 	show := map[string]bool{"1": true}
 	users := genUserIDs()
 	mem := genMemInfo(logger)
